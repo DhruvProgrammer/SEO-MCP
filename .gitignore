@@ -1,0 +1,27 @@
+# Secrets - never commit these
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs - rebuild per machine, never commit
+venv/
+.venv/
+env/
+
+# Generated at runtime (config.py:35)
+.genre_cache.json
+
+# Local agent state
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
