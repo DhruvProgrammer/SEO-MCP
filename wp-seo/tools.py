@@ -262,8 +262,9 @@ def create_draft_from_scraped_data(scraped_data: dict) -> dict:
             )
 
         featured_image_set = False
+        featured_image_error = ""
         if image_url:
-            featured_image_set = wp_client.upload_featured_image(
+            featured_image_set, featured_image_error = wp_client.upload_featured_image(
                 entry_id, image_url, content_type
             )
 
@@ -273,6 +274,10 @@ def create_draft_from_scraped_data(scraped_data: dict) -> dict:
             "content_type": content_type,
             "link": draft.get("link"),
             "featured_image_set": featured_image_set,
+            # A bare false is undiagnosable from the tool result, so the reason
+            # travels with it: a renamed taxonomy or a CDN host moving off
+            # WP_POSTER_HOSTS would otherwise fail silently on every draft.
+            "featured_image_error": featured_image_error or None,
             "resolved": {
                 "genre": [g["name"] for g in resolved["genre"]],
                 "cast": cast_names,

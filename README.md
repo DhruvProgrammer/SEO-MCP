@@ -223,21 +223,50 @@ from a scraped page and is therefore attacker-influenced:
 
 - **The host allowlist is the load-bearing control.** The IP checks are a second
   layer. Widening `WP_POSTER_HOSTS` to attacker-influenced hosts brings the
-  redirect and DNS-rebinding exposure back with it.
+  redirect and DNS-rebinding exposure back with it. The default is correct for
+  this site today (posters are same-host) — re-verify if that ever changes.
+- **A schemeless `WP_BASE_URL` empties the allowlist**, which fails closed with
+  a confusing message. `validate_credentials()` now catches this up front.
 - A host that streams slower than the read timeout can hold a worker for the
   length of the transfer. Memory stays bounded. With the default allowlist this
   is your own site misbehaving, not an attack path.
 - Filenames with a dotted stem (`My_Poster.1.jpg`) are skipped. The draft is
   still created; the reason is logged to stderr.
 
+## Verified against the live site
+
+The site-specific assumptions below were checked against `flixgarden.site`
+(2026-10-14) and currently hold:
+
+| Assumption | Status |
+|---|---|
+| `movie` / `tv` are the REST bases | 200; 2240 movies, 372 TV entries |
+| `genre` + `actor` register for both post types | Both, with no `category` |
+| 26 genre terms, literal `&amp;` in three names | Exact match, zero drift |
+| All 7 alias keys resolve | 7/7 keys, 27/27 values, no warnings |
+| RankMath active | 7 namespaces, ~60 routes |
+| Posters served from the site's own host | 100/100 media `source_url`s |
+| `/movie/`, `/tv/` permitted by `robots.txt` | Not disallowed; uploads explicitly `Allow`ed |
+| No active bot challenge | Cloudflare present, returns 200 with real content |
+
+Three things are known to be **fragile** rather than confirmed:
+
+- **JSON-LD shape.** The theme emits a flat `@type` object today. If the SEO
+  plugin is ever swapped for Yoast, which defaults to `@graph`, the JSON-LD
+  reader returns nothing — silently. It has no `@graph` fallback.
+- **Theme classes.** Every `mf-*` selector is theme-internal and will break on
+  a redesign with no error, only missing fields.
+- **The genre snapshot** in `test_taxonomy.py` is a fixture. The live taxonomy
+  can change without the suite noticing; nothing asserts freshness.
+
 ## Tests
 
-188 assertions across three offline suites. No network, WordPress or MongoDB
+194 assertions across three offline suites. No network, WordPress or MongoDB
 required, and no pytest:
 
 ```bash
 cd wp-seo  && python test_taxonomy.py   # 45  genre resolution
-cd wp-seo  && python test_fixes.py      # 116 hardening
+cd wp-seo  && python test_fixes.py      # 122 hardening
 cd scraper && python test_validation.py # 27  scrape guard
 ```
 

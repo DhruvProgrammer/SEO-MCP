@@ -162,12 +162,30 @@ def update_entry(entry_id, seo_data: dict, content_type: str = CONTENT_TYPE_MOVI
     if not meta:
         return {"id": entry_id, "link": None, "seo": {}}
 
-    item = wp_fetch(f"/wp/v2/{post_type}/{entry_id}", method="POST", body={"meta": meta})
+    # context=edit is what makes WordPress include `meta` in the response. Without
+    # it the reply is view-context, `meta` is omitted entirely, and the check
+    # below could never distinguish a successful write from a silently dropped
+    # one - which is how a completely failed RankMath update ended up reported
+    # as a success with four empty strings.
+    item = wp_fetch(
+        f"/wp/v2/{post_type}/{entry_id}?context=edit", method="POST", body={"meta": meta}
+    )
+
+    written = _seo_from_meta(item.get("meta", {}))
+    missing = [key for key, value in written.items() if not value and meta.get(key)]
+    if missing:
+        raise WordPressAPIError(
+            f"RankMath meta did not persist on {post_type}/{entry_id}: {missing}. "
+            "The entry was updated but those fields were silently dropped - check "
+            "that RankMath is active and registered for this post type.",
+            200,
+            written,
+        )
 
     return {
         "id": item.get("id"),
         "link": item.get("link"),
-        "seo": _seo_from_meta(item.get("meta", {})),
+        "seo": written,
     }
 
 
@@ -542,9 +560,11 @@ def _safe_filename(image_url: str, extension: str) -> str:
     ending ".jpg" that actually serves a PNG is common on these CDNs).
 
     Only the final extension is stripped, so an intermediate one would survive:
-    "/shell.php.jpg" -> "shell.php.jpg". Not exploitable on a default
-    Apache/nginx, but it is on an AddHandler/SetHandler catch-all, so a stem
-    that still carries a dot is refused outright.
+    "/shell.php.jpg" -> "shell-php.jpg". Not exploitable on a default
+    Apache/nginx, but it is on an AddHandler/SetHandler catch-all, so any dot
+    left after stripping is removed rather than raised on. Refusing outright
+    would be marginally stricter, but would also break permanently on an
+    ordinary upload named "Movie.Title.2024.jpg".
     """
     path = urllib.parse.urlparse(image_url).path
     raw = urllib.parse.unquote(path.rsplit("/", 1)[-1])
@@ -553,9 +573,7 @@ def _safe_filename(image_url: str, extension: str) -> str:
         if stem.lower().endswith(known):
             stem = stem[: -len(known)]
             break
-    stem = stem.strip("-._")[:60]
-    if "." in stem:
-        raise ValueError(f"refusing image filename stem {stem!r}: it carries an extra extension.")
+    stem = stem.replace(".", "-").strip("-._")[:60]
     return (stem or "poster") + extension
 
 
@@ -563,9 +581,13 @@ def upload_featured_image(
     entry_id,
     image_url: str,
     content_type: str = CONTENT_TYPE_MOVIE,
-) -> bool:
+) -> tuple[bool, str]:
     """
     Downloads image_url and attaches it as the entry's featured image.
+
+    Returns (ok, reason). A missing poster is never worth failing a whole draft
+    creation over, but a bare `False` is undiagnosable to the caller, so the
+    reason travels with the result.
 
     `content_type` is required because movie and tv share an ID space: guessing
     the type from the media object's own permalink would target the wrong post.
@@ -574,9 +596,6 @@ def upload_featured_image(
     checked (including after each redirect), the body is streamed under a byte
     cap, and the image type is sniffed from the payload rather than taken from
     the remote Content-Type header.
-
-    Failures are reported on stderr and returned as False; a missing poster is
-    never worth failing a whole draft creation over.
     """
     post_type = "?"
     try:
@@ -630,11 +649,12 @@ def upload_featured_image(
         wp_fetch(
             f"/wp/v2/{post_type}/{entry_id}", method="POST", body={"featured_media": media_id}
         )
-        return True
+        return True, ""
     except Exception as e:
+        reason = str(e) or type(e).__name__
         print(
             f"Warning: Failed to upload featured image for {post_type} entry "
-            f"{entry_id}: {e}",
+            f"{entry_id}: {reason}",
             file=sys.stderr,
         )
-        return False
+        return False, reason

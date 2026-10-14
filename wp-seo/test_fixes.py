@@ -463,19 +463,20 @@ def test_safe_filename():
         "path traversal collapses",
         wp_client._safe_filename("https://x.com/../../etc/passwd.jpg", ".jpg") == "passwd.jpg",
     )
-    # Intermediate executable extensions must not survive.
-    for url in (
-        "https://x.com/shell.php.jpg",
-        "https://x.com/shell.phtml.png",
-        "https://x.com/evil.svg.jpg",
-        "https://x.com/shell.asp.gif",
-    ):
-        try:
-            name = wp_client._safe_filename(url, ".jpg")
-            check(f"{url.rsplit('/', 1)[-1]} refused", False)
-            print(f"        got {name!r}")
-        except ValueError as e:
-            check(f"{url.rsplit('/', 1)[-1]} refused", "extra extension" in str(e))
+    # Intermediate executable extensions must be neutralised, not carried through.
+    for url, want in [
+        ("https://x.com/shell.php.jpg", "shell-php.jpg"),
+        ("https://x.com/shell.phtml.png", "shell-phtml.png"),
+        ("https://x.com/evil.svg.jpg", "evil-svg.jpg"),
+        ("https://x.com/shell.asp.gif", "shell-asp.gif"),
+        ("https://x.com/a.b.c.d.png", "a-b-c-d.png"),
+    ]:
+        got = wp_client._safe_filename(url, ".jpg" if url.endswith("gif") else ".jpg")
+        stem_got = got.rsplit(".", 1)[0]
+        check(
+            f"{url.rsplit('/', 1)[-1]} neutralised -> {want}",
+            "." not in stem_got and stem_got == want.rsplit(".", 1)[0],
+        )
 
 
 # ---------------------------------------------------------------- byte cap (stubbed)
@@ -738,11 +739,76 @@ def test_redirects_real_server():
                 pass
 
 
+def test_update_entry_persistence():
+    """
+    A silently dropped RankMath write must not read as a success.
+
+    The POST originally omitted context=edit, so WordPress replied in view
+    context with no `meta` key at all. Every response therefore looked like
+    four empty strings, and a completely failed update was reported as success.
+    """
+    print("\n== update_entry: dropped meta is not success ==")
+
+    real_fetch = wp_client.wp_fetch
+    captured = {}
+
+    def view_context_fetch(path, method="GET", body=None, timeout=30):
+        captured["path"] = path
+        captured["method"] = method
+        captured["body"] = body
+        if method == "GET":
+            return {"id": 1, "title": {"raw": "Dune"}}
+        return {"id": 1, "link": "https://x/movie/dune/", "meta": {}}
+
+    def good_fetch(path, method="GET", body=None, timeout=30):
+        if method == "GET":
+            return {"id": 1, "title": {"raw": "Dune"}}
+        return {
+            "id": 1,
+            "link": "https://x/movie/dune/",
+            "meta": {
+                "rank_math_title": "Dune - Watch",
+                "rank_math_focus_keyword": "Dune",
+            },
+        }
+
+    try:
+        wp_client.wp_fetch = view_context_fetch
+        try:
+            wp_client.update_entry(1, {"title": "Dune - Watch", "focus_keyword": "Dune"}, "movie")
+            check("dropped meta raises instead of reporting success", False)
+        except wp_client.WordPressAPIError as e:
+            check("dropped meta raises instead of reporting success", "did not persist" in str(e))
+
+        check(
+            "POST is sent with context=edit",
+            "context=edit" in captured.get("path", ""),
+        )
+        check(
+            "only keys present in seo_data are sent",
+            set((captured.get("body") or {}).get("meta", {}))
+            == {"rank_math_title", "rank_math_focus_keyword"},
+        )
+
+        wp_client.wp_fetch = good_fetch
+        result = wp_client.update_entry(1, {"title": "Dune - Watch", "focus_keyword": "Dune"}, "movie")
+        check(
+            "successful write returns the persisted values",
+            result["seo"]["rank_math_title"] == "Dune - Watch",
+        )
+
+        result = wp_client.update_entry(1, {}, "movie")
+        check("empty seo_data is a no-op, not an error", result["seo"] == {})
+    finally:
+        wp_client.wp_fetch = real_fetch
+
+
 def main():
     print("=" * 72)
     print("HARDENING REGRESSION TESTS")
     print("=" * 72)
 
+    test_update_entry_persistence()
     test_year_from_entry()
     test_envelope_bridge()
     test_scraped_validation()

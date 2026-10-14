@@ -81,6 +81,14 @@ def validate_credentials() -> list[str]:
     problems = []
     if not WP_BASE_URL:
         problems.append("WP_BASE_URL is not set (expected https://flixgarden.site).")
+    elif not urllib.parse.urlparse(WP_BASE_URL).hostname:
+        # config.POSTER_HOSTS is derived from this hostname. A schemeless value
+        # leaves it empty, which makes every poster fetch fail closed with a
+        # message pointing at the wrong variable.
+        problems.append(
+            "WP_BASE_URL must include a scheme, e.g. https://flixgarden.site "
+            f"(got {WP_BASE_URL!r})."
+        )
     if _placeholder("WP_USERNAME") or not WP_USERNAME:
         problems.append(
             "WP_USERNAME is not set. Create a user on the FlixGarden site and put its "
